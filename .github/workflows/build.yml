@@ -1,36 +1,66 @@
-name: Check Updates
+name: Build new-api
 
-on:
-  schedule:
-    - cron: '0 16 */1 * *'
-  workflow_dispatch:
+on: workflow_dispatch
 
 jobs:
-  tests:
+  test:
     runs-on: ubuntu-latest
+    name: Build new-api
     steps:
+    
       - uses: actions/checkout@v4
-      - name: compare versions
-        run: |
-          export REMOTEVERSION=$(wget -qO- https://api.github.com/repos/Calcium-Ion/new-api/tags | gawk -F '["v]' '/name/{print "v"$5;exit}')
-          export LOCALVERSION=$(curl --location --silent --fail --show-error "https://api.github.com/repos/wisebirdy/new-api-ubuntu/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
-          bash compare.sh
-          
-      - name: Trigger release
-        if: ${{ env.SYNCED == 0 }}
-        uses: actions/github-script@v6
+    
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
-          script: |
-              await github.rest.actions.createWorkflowDispatch({
-              owner: 'wisebirdy',
-              repo: 'new-api-ubuntu',
-              workflow_id: 'build.yml',
-              ref: 'main'
-              })
+          node-version: 18
+
+      - name: Clone Repo
+        run: |
+            export LATEST_APP=$(wget -qO- https://api.github.com/repos/Calcium-Ion/new-api/tags | gawk -F '["v]' '/name/{print "v"$5;exit}')
+            git clone -b $LATEST_APP https://github.com/Calcium-Ion/new-api
+
+      - name: Build Frontend
+        env:
+          CI: ""
+        run: |
+          cd new-api/web
+          npm install
+          REACT_APP_VERSION=$(git describe --tags) npm run build
+          cd ../..
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23.4'  # 使用与原来相同的 Go 版本
+
+      - name: Build Backend
+        run: |
+          cd new-api
+          go mod download
+          go build -ldflags "-s -w -X 'one-api/common.Version=$(git describe --tags)' -extldflags '-static'" -o new-api
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@main
+        with:
+          name: new-api-ubuntu
+          path: |
+              new-api/new-api
+  
+      - name: Generate release tag
+        id: tag
+        run: echo "release_tag=$(wget -qO- https://api.github.com/repos/Calcium-Ion/new-api/tags | gawk -F '["v]' '/name/{print "v"$5;exit}')" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          files: |
+                new-api/new-api
               
       - name: Delete workflow runs
-        if: ${{ env.SYNCED == 1 }}
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ github.token }}
